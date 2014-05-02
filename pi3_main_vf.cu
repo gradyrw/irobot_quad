@@ -77,6 +77,8 @@ void rfTransfer(LWPR_ReceptiveField *rf_orig, RF_Predict *rf_pred) {
 
 __constant__ float U_d[T*CONTROL_DIM];
 __constant__ float dm_d[T*M*DERIV_STATE_DIM];
+__constant__ float norm_in1_d[N];
+__constant__ float norm_in2_d[N];
 
 __device__ void print_vec(float* A, float* B, int n) {
   printf("\n\n++++++++++++++++++++++++++++++++++++++++++");
@@ -328,13 +330,20 @@ __device__ void compute_dynamics(float* s, float* u, float* lwpr_input, RF_Predi
   //------Problem Specific------------
   s[0] += dt*s[2];
   s[1] += dt*s[3];
-  lwpr_input[0] = s[2];
-  lwpr_input[1] = s[3];
-  lwpr_input[2] = u[0];
-  lwpr_input[3] = u[1];
+  lwpr_input[0] = s[2]/norm_in1_d[0];
+  lwpr_input[1] = s[3]/norm_in1_d[1];
+  lwpr_input[2] = u[0]/norm_in1_d[2];
+  lwpr_input[3] = u[1]/norm_in1_d[3];
+  //if (threadIdx.x == 0 && blockIdx.x ==0 && threadIdx.y == 0 && timestep == 0) {
+  //  printf("(%f, %f, %f, %f) \n", norm_in1[0], norm_in1[1], norm_in1[2], norm_in1[3]);
+  //}
   float vals[2];
   compute_predict_conf(rfs1, lwpr_input, numRFS1, vals);
   s[2] += dt*(vals[0] + vals[1]*dm_d[T*DERIV_STATE_DIM*threadIdx.y + DERIV_STATE_DIM*timestep]);
+  lwpr_input[0] = s[2]/norm_in2_d[0];
+  lwpr_input[1] = s[3]/norm_in2_d[1];
+  lwpr_input[2] = u[0]/norm_in2_d[2];
+  lwpr_input[3] = u[1]/norm_in2_d[3];
   compute_predict_conf(rfs2, lwpr_input, numRFS2, vals);
   s[3] += dt*(vals[0] + vals[1]*dm_d[T*DERIV_STATE_DIM*threadIdx.y + DERIV_STATE_DIM*timestep + 1]);
   //-----End Problem Specific----------
@@ -468,7 +477,16 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
   for (i = 0; i < model2.sub[0].numRFS; i++) {
     rfTransfer(model2.sub[0].rf[i], &rfs2[i]);
   }
-  //Create device pointers for rfs1 and rfs2
+  //Transfer norms to float arrays
+  float norm_in1[N];
+  float norm_in2[N];
+  for (i = 0; i < N; i++) {
+    norm_in1[i] = model1.norm_in[i];
+  }
+  for (i = 0; i < N; i++) {
+    norm_in2[i] = model2.norm_in[i];
+  }
+  //Create device pointers for rfs1, rfs2, norm_in1, and norm_in2
   RF_Predict* rfs1_d;
   RF_Predict* rfs2_d;
   //Allocate space for state, U, goal, rfs1, rfs2, and vars in device memory
@@ -484,6 +502,8 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
   HANDLE_ERROR( cudaMemcpy(vars_d, vars, CONTROL_DIM*sizeof(float), cudaMemcpyHostToDevice));
   HANDLE_ERROR( cudaMemcpy(rfs1_d, rfs1, model1.sub[0].numRFS*sizeof(RF_Predict), cudaMemcpyHostToDevice));
   HANDLE_ERROR( cudaMemcpy(rfs2_d, rfs2, model2.sub[0].numRFS*sizeof(RF_Predict), cudaMemcpyHostToDevice));
+  HANDLE_ERROR( cudaMemcpyToSymbol(norm_in1_d, norm_in1, N*sizeof(float), 0, cudaMemcpyHostToDevice));
+  HANDLE_ERROR( cudaMemcpyToSymbol(norm_in2_d, norm_in2, N*sizeof(float), 0, cudaMemcpyHostToDevice));
   //Allocate space for the state costs and new controls
   //For the raw state costs
   float* aug_state_costs_d;
@@ -568,6 +588,8 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
   cudaFree(state_costs_d);
   cudaFree(aug_state_costs_d);
   cudaFree(vars_d);
+  cudaFree(norm_in1_d);
+  cudaFree(norm_in2_d);
   //Free host arrays
   free(rfs1);
   free(rfs2);
