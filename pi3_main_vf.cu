@@ -6,10 +6,10 @@
 #include <math.h>
 #include <lwpr_xml.h>
 #define CONTROL_DIM 2
-#define STATE_DIM 4
-#define DERIV_STATE_DIM 2
+#define STATE_DIM 5
+#define DERIV_STATE_DIM 3
 //N is the number of states in an LWPR model, in this case 4
-#define N 4
+#define N 5
 #define K 1000
 #define M 16
 #define T 60
@@ -79,6 +79,7 @@ __constant__ float U_d[T*CONTROL_DIM];
 __constant__ float dm_d[T*M*DERIV_STATE_DIM];
 __constant__ float norm_in1_d[N];
 __constant__ float norm_in2_d[N];
+__constant__ float norm_in3_d[N];
 
 __device__ void print_vec(float* A, float* B, int n) {
   printf("\n\n++++++++++++++++++++++++++++++++++++++++++");
@@ -324,28 +325,38 @@ __device__ void compute_predict_conf(RF_Predict* rfs, float* x, int numRFS, floa
 }
 
 __device__ void compute_dynamics(float* s, float* u, float* lwpr_input, RF_Predict* rfs1, RF_Predict* rfs2, 
-				 int timestep, int numRFS1, int numRFS2) 
+				 RF_Predict* rfs3, int timestep, int numRFS1, int numRFS2, int numRFS3) 
 {
   float dt = 1.0/(1.0*HZ);
   //------Problem Specific------------
-  s[0] += dt*s[2];
-  s[1] += dt*s[3];
-  lwpr_input[0] = s[2]/norm_in1_d[0];
-  lwpr_input[1] = s[3]/norm_in1_d[1];
-  lwpr_input[2] = u[0]/norm_in1_d[2];
-  lwpr_input[3] = u[1]/norm_in1_d[3];
-  //if (threadIdx.x == 0 && blockIdx.x ==0 && threadIdx.y == 0 && timestep == 0) {
-  //  printf("(%f, %f, %f, %f) \n", norm_in1[0], norm_in1[1], norm_in1[2], norm_in1[3]);
-  //}
   float vals[2];
+  //Compute first prediction
+  lwpr_input[0] = s[0]/norm_in1_d[0];
+  lwpr_input[1] = s[1]/norm_in1_d[1];
+  lwpr_input[2] = s[2]/norm_in1_d[2];
+  lwpr_input[3] = s[3]/norm_in1_d[3];
+  lwpr_input[4] = s[4]/norm_in1_d[4];
   compute_predict_conf(rfs1, lwpr_input, numRFS1, vals);
-  s[2] += dt*(vals[0] + vals[1]*dm_d[T*DERIV_STATE_DIM*threadIdx.y + DERIV_STATE_DIM*timestep]);
-  lwpr_input[0] = s[2]/norm_in2_d[0];
-  lwpr_input[1] = s[3]/norm_in2_d[1];
-  lwpr_input[2] = u[0]/norm_in2_d[2];
-  lwpr_input[3] = u[1]/norm_in2_d[3];
+  s[0] += dt*(vals[0] + vals[1]*dm_d[T*DERIV_STATE_DIM*threadIdx.y + DERIV_STATE_DIM*timestep]);
+  //Compute second prediction
+  lwpr_input[0] = s[0]/norm_in2_d[0];
+  lwpr_input[1] = s[1]/norm_in2_d[1];
+  lwpr_input[2] = s[2]/norm_in2_d[2];
+  lwpr_input[3] = s[3]/norm_in2_d[3];
+  lwpr_input[4] = s[4]/norm_in2_d[4];
   compute_predict_conf(rfs2, lwpr_input, numRFS2, vals);
-  s[3] += dt*(vals[0] + vals[1]*dm_d[T*DERIV_STATE_DIM*threadIdx.y + DERIV_STATE_DIM*timestep + 1]);
+  s[1] += dt*(vals[0] + vals[1]*dm_d[T*DERIV_STATE_DIM*threadIdx.y + DERIV_STATE_DIM*timestep + 1]);
+  //Compute third prediction
+  lwpr_input[0] = s[0]/norm_in3_d[0];
+  lwpr_input[1] = s[1]/norm_in3_d[1];
+  lwpr_input[2] = s[2]/norm_in3_d[2];
+  lwpr_input[3] = s[3]/norm_in3_d[3];
+  lwpr_input[4] = s[4]/norm_in3_d[4];
+  compute_predict_conf(rfs3, lwpr_input, numRFS3, vals);
+  s[2] += dt*(vals[0] + vals[1]*dm_d[T*DERIV_STATE_DIM*threadIdx.y + DERIV_STATE_DIM*timestep + 2]);
+  //Low pass filter controls
+  s[3] += dt*(u[0] - s[3]);
+  s[4] += dt*(u[1] - s[4]);
   //-----End Problem Specific----------
 }
 
@@ -356,8 +367,9 @@ __device__ float compute_cost(float* s, float* u, float* goal)
   return d1*d1 + d2*d2;
 }
 
-__global__ void rollout_kernel(float* aug_state_costs_d, float* state_d, float* goal_d, RF_Predict* rfs1, 
-			       RF_Predict* rfs2, float* du_d, float* vars_d, int numRFS1, int numRFS2)
+__global__ void rollout_kernel(float* aug_state_costs_d, float* state_d, float* goal_d, RF_Predict* rfs1,
+			       RF_Predict* rfs2, RF_Predict* rfs3, float* du_d, float* vars_d, 
+			       int numRFS1, int numRFS2, int numRFS3)
 {
   int tdx = threadIdx.x;
   int tdy = threadIdx.y;
@@ -402,7 +414,7 @@ __global__ void rollout_kernel(float* aug_state_costs_d, float* state_d, float* 
 	u[1] = -1.0;
       }
       //------End Problem Specific Values-------------
-      compute_dynamics(s, u, lwpr_input, rfs1, rfs2, i, numRFS1, numRFS2);
+      compute_dynamics(s, u, lwpr_input, rfs1, rfs2, rfs3, i, numRFS1, numRFS2, numRFS3);
       float inst_cost = compute_cost(s,u,goal_d);
       aug_state_costs_d[M*T*((blockDim.x)*bdx + tdx) + T*tdy + i] = inst_cost;
     }
@@ -444,8 +456,8 @@ __global__ void norm_exp_costs_kernel(float* state_costs_d)
 //--------------------------------END CUDA------------------------------------------------
 //========================================================================================
 
-void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWPR_Model model2, 
-		     float* vars, curandGenerator_t gen) {
+void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWPR_Model model2,
+		     LWPR_Model model3, float* vars, curandGenerator_t gen) {
   //Timing Code
   cudaEvent_t start, stop;
   float time;
@@ -469,32 +481,43 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
   int i,j;
   RF_Predict* rfs1;
   RF_Predict* rfs2;
+  RF_Predict* rfs3;
   rfs1 = (RF_Predict*)malloc(model1.sub[0].numRFS*sizeof(RF_Predict));
   rfs2 = (RF_Predict*)malloc(model2.sub[0].numRFS*sizeof(RF_Predict));
+  rfs3 = (RF_Predict*)malloc(model3.sub[0].numRFS*sizeof(RF_Predict)); 
   for (i = 0; i < model1.sub[0].numRFS; i++) {
     rfTransfer(model1.sub[0].rf[i], &rfs1[i]);
   }
   for (i = 0; i < model2.sub[0].numRFS; i++) {
     rfTransfer(model2.sub[0].rf[i], &rfs2[i]);
   }
+  for (i = 0; i < model3.sub[0].numRFS; i++) {
+    rfTransfer(model3.sub[0].rf[i], &rfs3[i]);
+  }
   //Transfer norms to float arrays
   float norm_in1[N];
   float norm_in2[N];
+  float norm_in3[N];
   for (i = 0; i < N; i++) {
     norm_in1[i] = model1.norm_in[i];
   }
   for (i = 0; i < N; i++) {
     norm_in2[i] = model2.norm_in[i];
   }
+  for (i = 0; i < N; i++) {
+    norm_in3[i] = model3.norm_in[i];
+  }
   //Create device pointers for rfs1, rfs2, norm_in1, and norm_in2
   RF_Predict* rfs1_d;
   RF_Predict* rfs2_d;
+  RF_Predict* rfs3_d;
   //Allocate space for state, U, goal, rfs1, rfs2, and vars in device memory
   HANDLE_ERROR( cudaMalloc((void**)&state_d, STATE_DIM*sizeof(float)));
   HANDLE_ERROR( cudaMalloc((void**)&goal_d, STATE_DIM*sizeof(float)));
   HANDLE_ERROR( cudaMalloc((void**)&vars_d, CONTROL_DIM*sizeof(float)));
   HANDLE_ERROR( cudaMalloc((void**)&rfs1_d, model1.sub[0].numRFS*sizeof(RF_Predict)));
   HANDLE_ERROR( cudaMalloc((void**)&rfs2_d, model2.sub[0].numRFS*sizeof(RF_Predict)));
+  HANDLE_ERROR( cudaMalloc((void**)&rfs3_d, model3.sub[0].numRFS*sizeof(RF_Predict)));
   //Copy state, U, goal, model1, and model2 into device memory
   HANDLE_ERROR( cudaMemcpy(state_d, state, STATE_DIM*sizeof(float), cudaMemcpyHostToDevice));
   HANDLE_ERROR( cudaMemcpyToSymbol(U_d, U, CONTROL_DIM*T*sizeof(float), 0, cudaMemcpyHostToDevice));
@@ -502,8 +525,10 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
   HANDLE_ERROR( cudaMemcpy(vars_d, vars, CONTROL_DIM*sizeof(float), cudaMemcpyHostToDevice));
   HANDLE_ERROR( cudaMemcpy(rfs1_d, rfs1, model1.sub[0].numRFS*sizeof(RF_Predict), cudaMemcpyHostToDevice));
   HANDLE_ERROR( cudaMemcpy(rfs2_d, rfs2, model2.sub[0].numRFS*sizeof(RF_Predict), cudaMemcpyHostToDevice));
+  HANDLE_ERROR( cudaMemcpy(rfs3_d, rfs3, model3.sub[0].numRFS*sizeof(RF_Predict), cudaMemcpyHostToDevice));
   HANDLE_ERROR( cudaMemcpyToSymbol(norm_in1_d, norm_in1, N*sizeof(float), 0, cudaMemcpyHostToDevice));
   HANDLE_ERROR( cudaMemcpyToSymbol(norm_in2_d, norm_in2, N*sizeof(float), 0, cudaMemcpyHostToDevice));
+  HANDLE_ERROR( cudaMemcpyToSymbol(norm_in3_d, norm_in3, N*sizeof(float), 0, cudaMemcpyHostToDevice));
   //Allocate space for the state costs and new controls
   //For the raw state costs
   float* aug_state_costs_d;
@@ -520,7 +545,7 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
   dim3 dimGrid1(xGridSize, 1, 1);
   cudaEventRecord(start, 0);
   //Now we launch the kernel to compute the new control
-  rollout_kernel<<<dimGrid1, dimBlock1>>>(aug_state_costs_d, state_d, goal_d, rfs1_d, rfs2_d, du_d, vars_d, model1.sub[0].numRFS, model2.sub[0].numRFS);
+  rollout_kernel<<<dimGrid1, dimBlock1>>>(aug_state_costs_d, state_d, goal_d, rfs1_d, rfs2_d, rfs3_d, du_d, vars_d, model1.sub[0].numRFS, model2.sub[0].numRFS, model3.sub[0].numRFS);
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaDeviceSynchronize();
@@ -584,12 +609,9 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
   cudaFree(rfs1_d);
   cudaFree(rfs2_d);
   cudaFree(du_d);
-  cudaFree(dm_d);
   cudaFree(state_costs_d);
   cudaFree(aug_state_costs_d);
   cudaFree(vars_d);
-  cudaFree(norm_in1_d);
-  cudaFree(norm_in2_d);
   //Free host arrays
   free(rfs1);
   free(rfs2);
@@ -602,45 +624,38 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
 }
 
 void dynamics(float* s, float* u, float dt) {
-  if (u[0] > 1.0) {
-    u[0] = 1.0;
-  }
-  else if (u[0] < -1.0) {
-    u[0] = -1.0;
-  }
-  if (u[1] > 1.0) {
-    u[1] = 1.0;
-  }
-  else if (u[1] < -1.0) {
-    u[1] = -1.0;
-  }
-  s[0] += dt*s[2];
-  s[1] += dt*(s[3]);
-  s[2] += dt*(u[0]);
-  s[3] += dt*(u[1]);
+  s[0] += dt*s[3];
+  s[1] += dt*(s[4]);
+  s[2] = 0;
+  s[3] += dt*(u[0] - s[3]);
+  s[4] += dt*(u[1] - s[4]);
 }
 
 int main() {
   LWPR_Model model1;
   LWPR_Model model2;
-  char p_xdot[] = {'p', '_', 'x', 'd', 'o', 't', '.', 'x', 'm', 'l', '\0'};
-  char p_ydot[] = {'p', '_', 'y', 'd', 'o', 't', '.', 'x', 'm', 'l', '\0'};
+  LWPR_Model model3;
+  char x_dot[] = {'x', '.', 'x', 'm', 'l', '\0'};
+  char y_dot[] = {'y', '.', 'x', 'm', 'l', '\0'};
+  char theta_dot[] = {'t', 'h', 'e', 't', 'a', '.', 'x', 'm', 'l', '\0'};
   int e1[] = {-3};
   int e2[] = {-3};
-  lwpr_read_xml(&model1, p_xdot, e1);
-  lwpr_read_xml(&model2, p_ydot, e2);
+  int e3[] = {-3};
+  lwpr_read_xml(&model1, x_dot, e1);
+  lwpr_read_xml(&model2, y_dot, e2);
+  lwpr_read_xml(&model3, theta_dot, e3); 
   float U[T*CONTROL_DIM] = {0};
-  float u[] = {0,0};
-  float s[4] = {0};
-  float goal[] = {10.0, -3.0, 0, 0};
+  float u[CONTROL_DIM] = {0};
+  float s[STATE_DIM] = {0};
+  float goal[] = {10.0, -3.0, 0, 0, 0};
   float vars[] = {.30, .30};
   curandGenerator_t gen;
   float dt = (1.0)/(1.0*HZ);
   curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
   curandSetPseudoRandomGeneratorSeed(gen, 1234ULL);
   int i,j;
-  for (j = 0; j < 1000; j++) {
-    compute_control(s, U, goal, model1, model2, vars, gen);
+  for (j = 0; j < 1; j++) {
+    compute_control(s, U, goal, model1, model2, model3, vars, gen);
     u[0] = U[0];
     u[1] = U[1];
     for (i = 0; i < (T-1)*CONTROL_DIM; i++) {
@@ -648,14 +663,17 @@ int main() {
     }
     U[T-2] = 0;
     U[T-1] = 0;
-    double out1 = s[2];
-    double out2 = s[3];
+    double lwpr_input[5] = {s[0], s[1], s[2], s[3], s[4]};
+    double out1 = s[0];
+    double out2 = s[1];
+    double out3 = s[2];
     dynamics(s, u, dt);
-    out1 = (s[2] - out1)/dt;
-    out2 = (s[3] - out2)/dt;
-    double lwpr_input[4] = {s[2], s[3], u[0], u[1]};
+    out1 = (s[0] - out1)/dt;
+    out2 = (s[1] - out2)/dt;
+    out3 = (s[2] - out3)/dt;
     lwpr_update(&model1, lwpr_input, &out1, NULL, NULL);
     lwpr_update(&model2, lwpr_input, &out2, NULL, NULL);
+    lwpr_update(&model3, lwpr_input, &out3, NULL, NULL);
     printf("Current Location: (%f, %f) \n", s[0], s[1]);
   }
 }
