@@ -1,0 +1,22 @@
+#!/usr/bin/env python
+import rospy
+from beginner_tutorials.msg import rl_vel
+from create import *
+  
+robot = Create(tty = "/dev/rfcomm0")
+robot.start()
+
+def callback(rl_cmd):
+    right_wheel_vel = int(100*rl_cmd.r_vel)
+    left_wheel_vel = int(100*rl_cmd.l_vel)
+    robot.tank(right_wheel_vel, left_wheel_vel)
+
+rospy.init_node("robot_talker", anonymous=True)
+rospy.Subscriber("control", rl_vel, callback)
+
+rospy.spin()
+
+robot.stop()
+        
+    
+    
