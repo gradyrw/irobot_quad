@@ -2,9 +2,9 @@
 #include <stdio.h>
 #include <cuda.h>
 #include <curand.h>
-#include <lwpr.h>
+#include <lwpr/lwpr.h>
 #include <math.h>
-#include <lwpr_xml.h>
+#include <lwpr/lwpr_xml.h>
 
 #define CONTROL_DIM 2
 #define STATE_DIM 5
@@ -657,9 +657,9 @@ void compute_control(float* state, float* U, float* goal, LWPR_Model model1, LWP
 }
 
 void dynamics(float* s, float* u, float dt) {
-  s[0] += dt*(s[3] + s[4])/2.0*cos(s[2]);
-  s[1] += dt*(s[3] + s[4])/2.0*sin(s[2]);
-  s[2] += dt*(s[3] - s[4])/.258;
+  s[0] += dt*(s[3] + 1.1*s[4])/2.0*cos(s[2]);
+  s[1] += dt*(s[3] + 1.1*s[4])/2.0*sin(s[2]);
+  s[2] += dt*(s[3] - 1.1*s[4])/.258;
   s[3] += dt*((u[0] + u[1]) - s[3]);
   s[4] += dt*((u[0] - u[1]) - s[4]);
   if (s[0] > 10.0) {
@@ -704,13 +704,17 @@ int main() {
   int e1[] = {-3};
   int e2[] = {-3};
   int e3[] = {-3};
-  lwpr_read_xml(&model1, x_dot, e1);
-  lwpr_read_xml(&model2, y_dot, e2);
-  lwpr_read_xml(&model3, theta_dot, e3);
+  lwpr_init_model(&model1, 5, 1, "x");
+  lwpr_init_model(&model2, 5, 1, "y");
+  lwpr_init_model(&model3, 5, 1, "theta");
+  //lwpr_read_xml(&model1, x_dot, e1);
+  //lwpr_read_xml(&model2, y_dot, e2);
+  //lwpr_read_xml(&model3, theta_dot, e3);
+  printf("%d %d %d", e1[0], e2[0], e3[0]);
   float U[T*CONTROL_DIM] = {0};
   float u[CONTROL_DIM] = {0};
   float s[STATE_DIM] = {0};
-  float goal[] = {5.0, 5.0, 0, 0, 0};
+  float goal[] = {2.0, 2.0, 0, 0, 0};
   float vars[] = {.50, .25};
   curandGenerator_t gen;
   float dt = (1.0)/(1.0*HZ);
