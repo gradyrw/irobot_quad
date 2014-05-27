@@ -793,7 +793,7 @@ int main(int argc, char** argv) {
   count = 0;
   while (ros::ok()) {
     count++;
-    compute_control(ros_state.s, U, ros_state.goal, model1, model2, model3, vars, gen);
+    compute_control(ros_state.s, U, ros_state.g, model1, model2, model3, vars, gen);
     u[0] = U[0];
     u[1] = U[1];
     
