@@ -28,31 +28,43 @@ class StateUpdater
 {
 private:
   ros::NodeHandle n;
-  ros::Subscriber sub;
+  ros::Subscriber sub_state;
+  ros::Subscriber sub_goal;
 public:
   float s[STATE_DIM];
+  float g[STATE_DIM];
   StateUpdater(float* init_state);
   void init_subscriber();
   void stateCallback(const pi3_irobot_pkg::irobot_state::ConstPtr& state_msg);
+  void goalCallback(const pi3_irobot_pkg::irobot_state::ConstPtr& goal_msg);
 };
 
-StateUpdater::StateUpdater(float* init_state) {
+StateUpdater::StateUpdater(float* init_state, float* init_goal) {
   int i;
   for (i = 0; i < STATE_DIM; i++) {
     s[i] = init_state[i];
+    g[i] = init_goal[i];
   }
 }
+
+void StateUpdater::goalCallback(const pi3_irobot_pkg::irobot_state::ConstPtr& goal_msg) {
+  g[0] = goal_msg->x;
+  g[1] = goal_msg->y;
+  g[2] = goal_msg->theta;
+  g[3] = goal_msg->r_vel;
+  g[4] = goal_msg->l_vel;
 
 void StateUpdater::stateCallback(const pi3_irobot_pkg::irobot_state::ConstPtr& state_msg) {
   s[0] = state_msg->x;
   s[1] = state_msg->y;
   s[2] = state_msg->theta;
   s[3] = state_msg->r_vel;
-  s[3] = state_msg->l_vel;
+  s[4] = state_msg->l_vel;
 }
 
 void StateUpdater::init_subscriber() {
-  sub = n.subscribe("state", 1, &StateUpdater::stateCallback, this);
+  sub_state = n.subscribe("state", 1, &StateUpdater::stateCallback, this);
+  sub_goal = n.subscribe("goal", 1, &StateUpdater::goalCallback, this);
 }
 
 static void HandleError( cudaError_t err,
@@ -766,10 +778,10 @@ int main(int argc, char** argv) {
   
   //Declare a new StateUpdater object
   float s[STATE_DIM] = {0};
-  StateUpdater ros_state(s);
+  float goal[STATE_DIM] = {0};
+  StateUpdater ros_state(s,goal);
   ros_state.init_subscriber();
   
-  float goal[] = {1.0, 0, 0, 0, 0};
   float vars[] = {.50, .25};
   
   curandGenerator_t gen;
@@ -781,10 +793,7 @@ int main(int argc, char** argv) {
   count = 0;
   while (ros::ok()) {
     count++;
-    for (j = 0; j < STATE_DIM; j++) {
-      s[j] = ros_state.s[j];
-    }
-    compute_control(s, U, goal, model1, model2, model3, vars, gen);
+    compute_control(ros_state.s, U, ros_state.goal, model1, model2, model3, vars, gen);
     u[0] = U[0];
     u[1] = U[1];
     
